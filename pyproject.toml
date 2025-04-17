@@ -1,0 +1,9 @@
+[project]
+name = "ffe"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "xarray>=2025.3.1",
+]
