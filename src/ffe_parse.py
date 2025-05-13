@@ -140,7 +140,9 @@ class FFEParser:
         
     @staticmethod
     def _extract_all_lines_to_list(file_path) -> List[str]:
-        """提取所有行数据到列表"""
+        """
+        将场数据分解为单频点数据, 以列表形式返回
+        """
         print(f"Reading {file_path} from disk...")
         with open(file_path, 'r') as f:
             lines = f.readlines()
@@ -173,7 +175,7 @@ class FFEParser:
     
     @staticmethod
     def _parse_section(section: List[str]) -> pd.DataFrame:
-        """解析单个配置段为DataFrame"""
+        """解析单个频点的数据, 将数据转换为Panda.DataFrame类型"""
         data_values = []
         keys = []
         try:
@@ -231,8 +233,16 @@ class FFEParser:
     
     @staticmethod
     @lru_cache(maxsize=100)  #最大缓存结果100个
-    def parse(file_path: str) -> FFData:
-        single_freq_patterns = FFEParser._parse(file_path)
+    def parse(*file_paths: str) -> FFData:
+        """
+        解析.ffe文件, 返回FFData对象.
+
+        :param *file_paths 远场文件路径(可以输入多个)
+        """
+        single_freq_patterns = [sfp for file_path in file_paths for sfp in FFEParser._parse(file_path)]
+        # 多个文件导入时会有重复频点，这里只保留第一次出现的数据(与文件路径顺序相同)
+        # 通过字典推导式用键的唯一性去重相同频率的方向图数据(这里用了反向遍历为了保留首次出现的元素)
+        single_freq_patterns = list({sfp.freq: sfp for sfp in reversed(single_freq_patterns)}.values())[::-1]
         return FFData(single_freq_patterns)
 
 
