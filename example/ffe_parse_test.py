@@ -9,7 +9,7 @@ from FFE import FFEParser
 
 if __name__ == '__main__':
     """使用示例"""
-    ffe_path = os.path.join(os.path.dirname(__file__), 'ffdata.ffe')
+    ffe_path = os.path.join(os.path.dirname(__file__), r'../.data/ffdata.ffe')
     # 初始化解析器
     time_start = time.time()
     ffd = FFEParser.parse(ffe_path)
