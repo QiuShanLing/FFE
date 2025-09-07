@@ -27,10 +27,13 @@ class FFData:
             phis (np.ndarray): 仰角数组
         """
         keys = fields[0].keys
-        keys = [key for key in keys if key not in ['Theta', 'Phi']]  # 去除方位角和仰角字段
+        keys = [key for key in keys if key not in ['Theta', 'Phi', r"Theta'", r"Phi'"]]  # 去除方位角和仰角字段
         datas = []
         for field in fields:
-            ds_f = field.dataframes.set_index(['Theta', 'Phi'])[keys].to_xarray()
+            try:
+                ds_f = field.dataframes.set_index(['Theta', 'Phi'])[keys].to_xarray()
+            except KeyError as e:
+                ds_f = field.dataframes.set_index(["Theta'", "Phi'"])[keys].to_xarray()
             ds_f = ds_f.expand_dims({'Frequency': [field.freq]})
             datas.append(ds_f)
         
@@ -66,7 +69,7 @@ class FFData:
         Returns:
             Fields: 场分量对象
         """
-        if key in ['Frequency', 'Theta', 'Phi']:
+        if key in ['Frequency', 'Theta', 'Phi', r"Theta'", r"Phi'"]:
             return getattr(self, key)
         
         return self.ds_multi[key]
@@ -79,8 +82,12 @@ class FFData:
         Returns:
             Fields: DataArray形式的电场分量对象
         '''
-        Etheta = self['Re(Etheta)'] + 1j * self['Im(Etheta)']
-        Ephi = self['Re(Ephi)'] + 1j * self['Im(Ephi)']
+        try:
+            Etheta = self['Re(Etheta)'] + 1j * self['Im(Etheta)']
+            Ephi = self['Re(Ephi)'] + 1j * self['Im(Ephi)']
+        except KeyError:
+            Etheta = self[r"Re(Etheta')"] + 1j * self[r"Im(Etheta')"]
+            Ephi = self[r"Re(Ephi')"] + 1j * self[r"Im(Ephi')"]
         return xr.Dataset({'Etheta': Etheta, 'Ephi': Ephi})
 
 
