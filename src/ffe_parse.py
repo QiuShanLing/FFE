@@ -1,39 +1,36 @@
+from turtle import clear
 import numpy as np
 import pandas as pd
-from typing import List
+from typing import List, Tuple
 import xarray as xr
 from functools import lru_cache
+import io
+
 
 class SingleFrequencyField:
     """单个频率场数据容器"""
-    def __init__(self, df: pd.DataFrame, freq: float, keys: List):
-        '''
-        Args:
-            df (pd.DataFrame): 单个频率场数据
-            freq (float): 频率
-        '''
+    def __init__(self, df: pd.DataFrame, freq: float):
         self.dataframes = df
         self.freq = freq
-        self.keys = keys
 
 
 class FFData:
-    """场分量数据类，用于存储和处理场分量数据"""
+    """场分量数据类"""
     def __init__(self, fields: List[SingleFrequencyField]):
-        """
-        Args:
-            values (np.ndarray): 场分量值
-            thetas (np.ndarray): 方位角数组
-            phis (np.ndarray): 仰角数组
-        """
-        keys = fields[0].keys
-        keys = [key for key in keys if key not in ['Theta', 'Phi']]  # 去除方位角和仰角字段
         datas = []
         for field in fields:
-            ds_f = field.dataframes.set_index(['Theta', 'Phi'])[keys].to_xarray()
+            # 1. 提取坐标列以外的所有列作为数据变量
+            # 此时列名已经被 Parser 标准化为 Theta, Phi
+            data_vars = [c for c in field.dataframes.columns if c not in ['Theta', 'Phi']]
+            
+            # 2. 转换为 Xarray (自动处理多维结构)
+            ds_f = field.dataframes.set_index(['Theta', 'Phi'])[data_vars].to_xarray()
+            
+            # 3. 扩展频率维度
             ds_f = ds_f.expand_dims({'Frequency': [field.freq]})
             datas.append(ds_f)
         
+        # 4. 合并所有频点
         self.ds_multi = xr.concat(datas, dim='Frequency')
     
     @property
@@ -66,185 +63,130 @@ class FFData:
         Returns:
             Fields: 场分量对象
         """
-        if key in ['Frequency', 'Theta', 'Phi']:
+        if key in ['Frequency', 'Theta', 'Phi', r"Theta'", r"Phi'"]:
             return getattr(self, key)
         
         return self.ds_multi[key]
     
     @property
     def electric_field(self) -> xr.Dataset:
-        '''
-        提取电厂场分量
-        
-        Returns:
-            Fields: DataArray形式的电场分量对象
-        '''
-        Etheta = self['Re(Etheta)'] + 1j * self['Im(Etheta)']
-        Ephi = self['Re(Ephi)'] + 1j * self['Im(Ephi)']
+        """提取复数电场分量"""
+        # 利用 xarray 的计算能力，自动对齐
+        try:
+            # 优先尝试标准命名
+            Etheta = self.ds_multi['Re(Etheta)'] + 1j * self.ds_multi['Im(Etheta)']
+            Ephi = self.ds_multi['Re(Ephi)'] + 1j * self.ds_multi['Im(Ephi)']
+        except KeyError:
+            # 如果解析器没清洗干净，这里做个保底，但最好是在解析器里做
+            raise ValueError("找不到标准的电场分量列(Re(Etheta)等)")
+            
         return xr.Dataset({'Etheta': Etheta, 'Ephi': Ephi})
 
-
-    def to_cartesian(self):
-        """
-        将球坐标场分量转换为直角坐标系
+    def to_cartesian(self) -> xr.Dataset:
+        """球坐标转直角坐标 (返回 xarray Dataset)"""
+        efield = self.electric_field
+        E_theta = efield['Etheta']
+        E_phi = efield['Ephi']
         
-        Returns:
-            Fields: 包含直角坐标系分量 (ex, ey, ez) 的新Fields实例
-        """
-        # 转换为弧度
-        theta = np.deg2rad(self.thetas)
-        phi = np.deg2rad(self.phis)
-
-        # 创建二维角度网格
-        theta_grid, phi_grid = np.meshgrid(theta, phi, indexing='ij')
-
-        # 检查形状是否匹配
-        if self.values.shape != (len(self.thetas), len(self.phis)):
-            raise ValueError(f"Shape mismatch: values {self.values.shape} must match grid {len(self.thetas), len(self.phis)}")
-
-        # 计算直角坐标分量
-        ex = self.values * np.cos(theta_grid) * np.cos(phi_grid)
-        ey = self.values * np.cos(theta_grid) * np.sin(phi_grid)
-        ez = -self.values * np.sin(theta_grid)
+        # 使用 xarray 的广播机制，不需要手动 meshgrid
+        theta = np.deg2rad(self.ds_multi.Theta)
+        phi = np.deg2rad(self.ds_multi.Phi)
         
-        # 将三个分量堆叠成三维数组
-        cartesian_values = np.stack([ex, ey, ez], axis=-1)
+        # 假设 E_theta 和 E_phi 是 Theta, Phi 分量的复数场
+        # 标准球坐标转直角坐标变换 (Ludwig 3 定义或其他定义需根据实际情况调整)
+        # 这里使用标准的矢量分解
+        Ex = E_theta * np.cos(theta) * np.cos(phi) - E_phi * np.sin(phi)
+        Ey = E_theta * np.cos(theta) * np.sin(phi) + E_phi * np.cos(phi)
+        Ez = -E_theta * np.sin(theta)
         
-        # 返回新的Fields实例
-        return FFData(cartesian_values, self.thetas, self.phis)
-
-class SpatialConfig:
-    """
-    场设置类，用于存储场设置信息
-    如频率、方位角、仰角、场分量名称等。
-    """
-    def __init__(self):
-        pass
+        return xr.Dataset({'Ex': Ex, 'Ey': Ey, 'Ez': Ez})
 
 
 class FFEParser:
-    """
-    FFE文件解析器，用于处理FEKO生成的.ffe远场数据文件。
-    """
-    
-    def __init__(self, file_path: str):
-        """初始化解析器并加载文件
-        
-        Args:
-            file_path (str): .ffe文件路径
-        """
-        self.file_path = file_path
-        self.keys = []
-        self.field_contexts = []
-        self.single_freq_patterns = None
-        
-    @staticmethod
-    def _extract_all_lines_to_list(file_path) -> List[str]:
-        """
-        将场数据分解为单频点数据, 以列表形式返回
-        """
-        print(f"Reading {file_path} from disk...")
-        with open(file_path, 'r') as f:
-            lines = f.readlines()
-            
-        config_lines = []
-        for i, line in enumerate(lines):
-            '''
-            记录所有Configuration Name行的索引，用于提取各频点数据
-            '''
-            if 'Configuration Name:' in line:
-                config_lines.append(i)
-                
-        if not config_lines:
-            '''
-            通过config_lines判断是否存在频点数据，如果不存在，则抛出异常
-            '''
-            raise ValueError("未找到Configuration行, 请确认文件格式是否争取。")
-            
-        list_part_data = []
-        for i in range(len(config_lines)):
-            '''
-            提取所有频点的场数据，记录在config_sections[list]列表中
-            '''
-            start = config_lines[i]
-            end = config_lines[i+1] if i+1 < len(config_lines) else len(lines)
-            list_part_data.append(lines[start:end])
 
-        field_contexts =  list_part_data
-        return field_contexts
-    
     @staticmethod
-    def _parse_section(section: List[str]) -> pd.DataFrame:
-        """解析单个频点的数据, 将数据转换为Panda.DataFrame类型"""
-        data_values = []
-        keys = []
-        try:
-            for line in section:
-                if line.startswith('#Frequency:'):
+    def _standardize_columns(df: pd.DataFrame) -> pd.DataFrame:
+        """统一列名，去除 ' 号"""
+        clean_cols = {}
+        for col in df.columns:
+            if "'" in col:
+                clean_cols[col] = col.replace("'", "")
+        return df.rename(columns=clean_cols)
+
+    @staticmethod
+    def _parse_section(section: List[str]) -> Tuple[pd.DataFrame, float]:
+        """解析单个频点块"""
+        freq = 0.0
+        header_str = ""
+        data_lines = []
+        
+        for line in section:
+            if line.startswith('#Frequency:'):
+                try:
                     freq = float(line.split(':')[-1].strip())
-                if line.startswith('# '):
-                    keys = FFEParser._extract_keys(line)
-                elif line.startswith(' '):
-                    try:
-                        # 增强数据转换逻辑，支持科学计数法
-                        values = list(map(float, line.strip().split()))
-                        data_values.append(values)
-                    except ValueError as ve:
-                        print(f"数据转换错误: {ve} 行内容: {line.strip()}")
-                        continue
-
-            # 验证数据完整性（根据原始transform_config_data_to_table函数逻辑）
-            if not data_values:
-                raise ValueError("未找到有效数据，请检查配置段格式")
-            if not keys:
-                raise ValueError("未找到列标题，请确认文件包含'# Theta Phi...'格式的标题行")
-
-            # 创建DataFrame并验证数据一致性
-            df = pd.DataFrame(data_values, columns=keys)
-            if df.empty:
-                raise ValueError("生成的DataFrame为空，请检查数据格式")
-                
-            # 添加原始函数中的数据类型转换
-            numeric_cols = df.columns.difference(['Configuration Name'])
-            df[numeric_cols] = df[numeric_cols].apply(pd.to_numeric, errors='coerce')
+                except: pass
+            elif line.startswith('#') and ('Theta' in line):
+                header_str = line.replace('#', '').strip()
+            elif not line.strip().startswith(('#', '*')) and line.strip():
+                data_lines.append(line)
+        
+        if not header_str or not data_lines:
+            raise ValueError("Invalid section data")
             
-            # print(f"成功解析单频点数据，维度: {df.shape}")
-            return df, freq, keys
-
-        except Exception as e:
-            raise ValueError(f"解析失败: {str(e)}")
-    
-    @staticmethod
-    def _extract_keys(line: str) -> List[str]:
-        try:
-            keys = [element.strip('"') for element in line.strip().split(' ') if element.strip()!='' and element.strip()!='#']
-            return keys
-        except Exception as e:
-            raise ValueError(f"提取键名时发生错误: {e}")
+        # 使用 pandas 快速解析
+        csv_io = io.StringIO(header_str + "\n" + "".join(data_lines))
+        df = pd.read_csv(csv_io, sep=r'\s+')
+        
+        # 立即标准化
+        df = FFEParser._standardize_columns(df)
+        
+        return df, freq
 
     @staticmethod
     def _parse(file_path: str) -> List[SingleFrequencyField]:
-        """解析所有配置段为Config对象列表"""
-        print(f"开始解析文件: {file_path}")
-        field_contexts = FFEParser._extract_all_lines_to_list(file_path)
-        single_freq_patterns = [SingleFrequencyField(*FFEParser._parse_section(field_context)) for field_context in field_contexts]
-        print(f"成功解析文件: {file_path}")
-        return single_freq_patterns
-    
+        # 读取整个文件
+        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            lines = f.readlines()
+            
+        # 寻找分割点
+        config_indices = [i for i, line in enumerate(lines) if 'Configuration Name:' in line]
+        if not config_indices:
+            # 也许只有一个配置，尝试直接解析
+            if len(lines) > 0: config_indices = [0]
+            else: return []
+
+        results = []
+        for i in range(len(config_indices)):
+            start = config_indices[i]
+            end = config_indices[i+1] if i+1 < len(config_indices) else len(lines)
+            
+            # 传入切片
+            try:
+                df, freq = FFEParser._parse_section(lines[start:end])
+                results.append(SingleFrequencyField(df, freq))
+            except ValueError:
+                continue # 跳过无法解析的段（例如只有头没有数据的）
+                
+        return results
+
     @staticmethod
-    @lru_cache(maxsize=100)  #最大缓存结果100个
+    @lru_cache(maxsize=32)
     def parse(*file_paths: str) -> FFData:
-        """
-        解析.ffe文件, 返回FFData对象.
+        all_fields = []
+        for path in file_paths:
+            all_fields.extend(FFEParser._parse(path))
+            
+        # 按频率去重并排序
+        # 使用 dict 来去重 (保留最后出现的或者最先出现的，看需求)
+        unique_fields = {f.freq: f for f in all_fields} 
+        sorted_fields = [unique_fields[k] for k in sorted(unique_fields.keys())]
+        
+        return FFData(sorted_fields)
 
-        :param *file_paths 远场文件路径(可以输入多个)
-        """
-        single_freq_patterns = [sfp for file_path in file_paths for sfp in FFEParser._parse(file_path)]
-        # 多个文件导入时会有重复频点，这里只保留第一次出现的数据(与文件路径顺序相同)
-        # 通过字典推导式用键的唯一性去重相同频率的方向图数据(这里用了反向遍历为了保留首次出现的元素)
-        single_freq_patterns = list({sfp.freq: sfp for sfp in reversed(single_freq_patterns)}.values())[::-1]
-        return FFData(single_freq_patterns)
-
-
-if __name__ == '__main__':
-    pass
+if __name__ == "__main__":
+    test = ["Theta'"]
+    clean_cols = {}
+    for col in test:
+        if "'" in col:
+            clean_cols[col] = col.replace("'", "")
+    print(clean_cols)
