@@ -3,6 +3,10 @@ __pycache__/
 *.pyo
 *.pyd
 *.ffe
-.data/*
-.test/*
+
+build/*
+data/*
+test/*
+
+
 .vscode
