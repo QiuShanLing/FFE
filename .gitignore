@@ -12,3 +12,6 @@ cpp/test.cpp
 .vscode
 
 *.egg-info/
+.venv/
+.uv-cache/
+.uv-python/

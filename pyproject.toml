@@ -1,12 +1,17 @@
 [project]
 name = "ffe"
 version = "0.1.0"
-description = "Add your description here"
+description = "Fast Python/C++ parser for FEKO .ffe far-field files"
 readme = "README.md"
-requires-python = ">=3.10.0"
+requires-python = ">=3.11.0"
 dependencies = [
-    "loguru>=0.7.3",
+    "numpy>=1.24",
     "xarray>=2025.3.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
 ]
 
 [build-system]

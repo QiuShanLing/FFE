@@ -5,6 +5,8 @@
 #include <chrono>
 #include <cstring>
 #include <algorithm>
+#include <stdexcept>
+#include <vector>
 #include <charconv> // C++17用于快速转换数字
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
@@ -184,6 +186,74 @@ FFEFile parse_ffe(const std::string path){
     return file_data;
 }
 
+py::array_t<double> section_data_array(const Section& section) {
+    if (section.data.empty() || section.row_count == 0) {
+        return py::array_t<double>();
+    }
+
+    size_t rows = section.row_count;
+    size_t cols = section.data.size() / rows;
+    std::vector<py::ssize_t> shape(2);
+    shape[0] = static_cast<py::ssize_t>(rows);
+    shape[1] = static_cast<py::ssize_t>(cols);
+
+    py::array_t<double> arr(shape);
+    std::memcpy(arr.mutable_data(), section.data.data(), section.data.size() * sizeof(double));
+    return arr;
+}
+
+py::tuple parse_ffe_array(const std::string path) {
+    FFEFile file_data = parse_ffe(path);
+
+    if (file_data.headers.empty()) {
+        throw std::runtime_error("FFE header was not found.");
+    }
+    if (file_data.sections.empty()) {
+        throw std::runtime_error("No FFE sections were found.");
+    }
+
+    const size_t n_freq = file_data.sections.size();
+    const size_t n_cols = file_data.headers.size();
+    const size_t n_rows = file_data.sections[0].row_count;
+
+    if (n_rows == 0) {
+        throw std::runtime_error("First FFE section contains no data rows.");
+    }
+
+    std::vector<py::ssize_t> freq_shape(1);
+    freq_shape[0] = static_cast<py::ssize_t>(n_freq);
+    py::array_t<double> freqs(freq_shape);
+
+    std::vector<py::ssize_t> data_shape(3);
+    data_shape[0] = static_cast<py::ssize_t>(n_freq);
+    data_shape[1] = static_cast<py::ssize_t>(n_rows);
+    data_shape[2] = static_cast<py::ssize_t>(n_cols);
+    py::array_t<double> data(data_shape);
+
+    auto freqs_view = freqs.mutable_unchecked<1>();
+    auto data_view = data.mutable_unchecked<3>();
+
+    for (size_t i = 0; i < n_freq; ++i) {
+        const Section& section = file_data.sections[i];
+        if (section.row_count != n_rows) {
+            throw std::runtime_error("FFE sections have inconsistent row counts.");
+        }
+        if (section.data.size() != n_rows * n_cols) {
+            throw std::runtime_error("FFE section data size does not match header column count.");
+        }
+
+        freqs_view(i) = section.frequency;
+        const double* src = section.data.data();
+        for (size_t r = 0; r < n_rows; ++r) {
+            for (size_t c = 0; c < n_cols; ++c) {
+                data_view(i, r, c) = src[r * n_cols + c];
+            }
+        }
+    }
+
+    return py::make_tuple(file_data.headers, freqs, data);
+}
+
 
 // 在 PYBIND11_MODULE 内部
 
@@ -194,29 +264,7 @@ PYBIND11_MODULE(_parser, m) {
         .def(py::init<>())
         .def_readwrite("frequency", &Section::frequency)
         .def_readwrite("row_count", &Section::row_count)
-        
-        // 【核心修改】将一维 vector 直接映射为二维 Numpy 数组
-        .def_property_readonly("data", [](const Section &s) {
-            if (s.data.empty() || s.row_count == 0) {
-                return py::array_t<double>(); // 空数组
-            }
-
-            // 1. 计算维度
-            size_t rows = s.row_count;
-            size_t cols = s.data.size() / rows; // 自动推算列数
-
-            // 2. 定义 Numpy 的 Shape (行, 列)
-            std::vector<size_t> shape = {rows, cols};
-
-            // 3. 定义 Strides (步幅)
-            // 意思是：要在内存中跳到下一行，需要跳过 cols * 8 字节
-            //        要在内存中跳到下一列，需要跳过 8 字节 (double大小)
-            std::vector<size_t> strides = {cols * sizeof(double), sizeof(double)};
-
-            // 4. 返回数组（这是基于内存拷贝的，很安全）
-            // 如果追求极致零拷贝，需要稍微复杂的 memory_view 处理，但通常拷贝一次足够快了
-            return py::array_t<double>(shape, strides, s.data.data());
-        });
+        .def_property_readonly("data", &section_data_array);
 
     py::class_<FFEFile>(m, "FFEFile")
         .def(py::init<>())
@@ -224,4 +272,5 @@ PYBIND11_MODULE(_parser, m) {
         .def_readwrite("sections", &FFEFile::sections);
 
     m.def("parse_ffe", &parse_ffe, "Parse FFE file");
+    m.def("parse_ffe_array", &parse_ffe_array, "Parse FFE file and return headers, frequencies, and a 3D NumPy array");
 }

@@ -35,8 +35,8 @@ class FFData:
         Returns:
             Fields: 场分量对象
         """
-        if key in ['Frequency', 'Theta', 'Phi', r"Theta'", r"Phi'"]:
-            return getattr(self, key)
+        if key in self.ds.coords:
+            return self.ds.coords[key]
         
         return self.ds[key]
     

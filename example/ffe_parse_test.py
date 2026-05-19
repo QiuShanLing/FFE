@@ -1,29 +1,25 @@
-import sys
 from pathlib import Path
 import time
 import numpy as np
 
 main_dir = Path(__file__).parent.parent
-sys.path.append(str(main_dir))
 
-from src.ffe_parse import FFEParser
+from ffe import parse
 
 
 if __name__ == '__main__':
     """使用示例"""
-    ffe_path = main_dir / ".data/test.ffe"
+    ffe_path = main_dir / "data/ffdata.ffe"
     # 初始化解析器
     time_start = time.time()
-    ffd = FFEParser.parse(ffe_path)
+    ffd = parse(ffe_path)
     time_end = time.time()
     print(f"第一次解析耗时：{time_end - time_start:.2f}s")
-    # print(FFEParser.parse.cache_info())
 
     time_start = time.time()
-    ffd = FFEParser.parse(ffe_path)
+    ffd = parse(ffe_path)
     time_end = time.time()
     print(f"第二次解析耗时：{time_end - time_start:.2f}s")
-    print(FFEParser.parse.cache_info())
 
     # 定义特定的空域范围
     thetas = np.linspace(0, 90, 10)
