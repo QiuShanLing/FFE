@@ -1,10 +1,10 @@
 from functools import lru_cache
 from os import PathLike
-from typing import Union
+from typing import Iterable, Union
 
 from . import _parser  # type: ignore
 from .data import FFData
-from .utils import FFEToXarray
+from .utils import FFEToXarray, combine_ffe_datasets
 
 PathInput = Union[str, PathLike[str]]
 
@@ -58,6 +58,18 @@ def parse_ffe_dataset(path: PathInput):
     return FFEToXarray.from_file(path).convert()
 
 
-def parse(path: PathInput) -> FFData:
-    """Parse an FFE file and return the high-level FFData wrapper."""
-    return FFData(parse_ffe_dataset(path))
+def parse_ffe_datasets(paths: Iterable[PathInput]):
+    """Parse multiple FFE files and concatenate them along Frequency.
+
+    Non-frequency dimensions, coordinates, and data variables must match. The
+    resulting Frequency order follows the input path order.
+    """
+    return combine_ffe_datasets(parse_ffe_dataset(path) for path in paths)
+
+
+def parse(path: PathInput | Iterable[PathInput]) -> FFData:
+    """Parse one or more FFE files and return the high-level FFData wrapper."""
+    if isinstance(path, (str, PathLike)):
+        return FFData(parse_ffe_dataset(path))
+
+    return FFData(parse_ffe_datasets(path))

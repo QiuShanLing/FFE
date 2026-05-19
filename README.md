@@ -37,10 +37,13 @@ print(data.shape)  # (Frequency, SpatialPoint, Column)
 
 headers, frequencies, theta, phi, grid = parse_ffe_grid("path/to/file.ffe")
 print(grid.shape)  # (Frequency, Theta, Phi, Column)
+
+combined = parse(["band1.ffe", "band2.ffe"])
+print(combined.frequencies)  # follows the input path order
 ```
 ## TODO
 
-- [ ] 多频段数据合并
+- [x] 多频段数据合并
 - [ ] 兼容warp的文件
 
 ## 许可证

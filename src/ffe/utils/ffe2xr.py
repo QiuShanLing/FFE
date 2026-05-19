@@ -2,6 +2,32 @@ import numpy as np
 import xarray as xr
 
 
+def combine_ffe_datasets(datasets):
+    datasets = list(datasets)
+    if not datasets:
+        raise ValueError("At least one FFE dataset is required.")
+
+    reference = datasets[0]
+    for idx, dataset in enumerate(datasets[1:], start=1):
+        if set(dataset.data_vars) != set(reference.data_vars):
+            raise ValueError(f"Dataset at position {idx} has different data variables.")
+
+        for coord_name in reference.coords:
+            if coord_name == "Frequency":
+                continue
+            if coord_name not in dataset.coords:
+                raise ValueError(f"Dataset at position {idx} is missing coordinate {coord_name!r}.")
+            if not np.array_equal(reference.coords[coord_name].values, dataset.coords[coord_name].values):
+                raise ValueError(f"Dataset at position {idx} has different {coord_name!r} coordinates.")
+
+        non_frequency_dims = {name: size for name, size in reference.sizes.items() if name != "Frequency"}
+        dataset_non_frequency_dims = {name: size for name, size in dataset.sizes.items() if name != "Frequency"}
+        if dataset_non_frequency_dims != non_frequency_dims:
+            raise ValueError(f"Dataset at position {idx} has incompatible non-frequency dimensions.")
+
+    return xr.concat(datasets, dim="Frequency", data_vars="all", coords="minimal", compat="equals")
+
+
 class FFEToXarray:
     def __init__(
         self,
