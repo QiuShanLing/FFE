@@ -24,6 +24,12 @@ def _parse_ffe_array(path: str):
     return tuple(headers), frequencies, data
 
 
+@lru_cache(maxsize=1024)
+def _parse_ffe_grid(path: str):
+    headers, frequencies, axis1, axis2, data = _parser.parse_ffe_grid(path)
+    return tuple(headers), frequencies, axis1, axis2, data
+
+
 def parse_ffe(path: PathInput):
     """Parse an FFE file and return the low-level C++ FFEFile object."""
     return _parse_ffe_raw(_as_path_str(path))
@@ -36,6 +42,15 @@ def parse_ffe_array(path: PathInput):
     C++/Python boundary once, which is faster than collecting each section.
     """
     return _parse_ffe_array(_as_path_str(path))
+
+
+def parse_ffe_grid(path: PathInput):
+    """Parse an FFE file into grid-shaped arrays.
+
+    ``data`` has shape ``(Frequency, Axis1, Axis2, Column)`` and is ready for
+    direct xarray construction.
+    """
+    return _parse_ffe_grid(_as_path_str(path))
 
 
 def parse_ffe_dataset(path: PathInput):

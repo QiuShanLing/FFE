@@ -27,13 +27,16 @@ uv sync && uv pip install -e .
 ## 基本使用
 
 ```python
-from ffe import parse, parse_ffe_array
+from ffe import parse, parse_ffe_array, parse_ffe_grid
 
 ffd = parse("path/to/file.ffe")
 efield = ffd.electric_field
 
 headers, frequencies, data = parse_ffe_array("path/to/file.ffe")
 print(data.shape)  # (Frequency, SpatialPoint, Column)
+
+headers, frequencies, theta, phi, grid = parse_ffe_grid("path/to/file.ffe")
+print(grid.shape)  # (Frequency, Theta, Phi, Column)
 ```
 ## TODO
 

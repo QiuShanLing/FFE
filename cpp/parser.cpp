@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <stdexcept>
 #include <vector>
+#include <set>
 #include <charconv> // C++17用于快速转换数字
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
@@ -26,6 +27,8 @@ struct Section {
 struct FFEFile {
     std::vector<std::string> headers; // 列名 (如 Theta, Phi, Re(E)...)
     std::vector<Section> sections;    // 所有 Section 数据
+    size_t axis1_samples = 0;
+    size_t axis2_samples = 0;
 };
 
 // ==========================================
@@ -64,6 +67,41 @@ std::vector<std::string> parse_header_line(const char* start, const char* end) {
     return headers;
 }
 
+void parse_sample_counts(const std::string& content, FFEFile& result) {
+    const char* ptr = content.data();
+    const char* end = content.data() + content.size();
+    const char* key = "#No. of ";
+    const size_t key_len = std::strlen(key);
+    const char* suffix = " Samples:";
+    const size_t suffix_len = std::strlen(suffix);
+
+    while (ptr < end) {
+        auto line_end = std::find(ptr, end, '\n');
+        auto key_pos = std::search(ptr, line_end, key, key + key_len);
+        if (key_pos != line_end) {
+            const char* name_start = key_pos + key_len;
+            auto suffix_pos = std::search(name_start, line_end, suffix, suffix + suffix_len);
+            if (suffix_pos != line_end) {
+                std::string axis_name(name_start, suffix_pos);
+                size_t value = static_cast<size_t>(std::strtoull(suffix_pos + suffix_len, nullptr, 10));
+
+                if (!result.headers.empty()) {
+                    if (axis_name == result.headers[0]) {
+                        result.axis1_samples = value;
+                    } else if (result.headers.size() > 1 && axis_name == result.headers[1]) {
+                        result.axis2_samples = value;
+                    }
+                } else if (axis_name == "Theta" || axis_name == "U") {
+                    result.axis1_samples = value;
+                } else if (axis_name == "Phi" || axis_name == "V") {
+                    result.axis2_samples = value;
+                }
+            }
+        }
+        ptr = line_end == end ? end : line_end + 1;
+    }
+}
+
 // ==========================================
 // 3. 核心解析函数 (包含 Header 和 Frequency)
 // ==========================================
@@ -93,6 +131,8 @@ FFEFile parse_content(const std::string& content) {
         // 已修复，调到Header之后会跳过第一个Section，直接查找第二个
         // ptr = line_end; 
     }
+
+    parse_sample_counts(content, result);
 
     // --- B. 解析 Sections ---
     // 根据您的 Python 代码，Section 由 #Configuration Name 分隔
@@ -254,6 +294,144 @@ py::tuple parse_ffe_array(const std::string path) {
     return py::make_tuple(file_data.headers, freqs, data);
 }
 
+std::vector<double> infer_axis_values(const Section& section, size_t col, size_t n_cols) {
+    std::set<double> values;
+    for (size_t row = 0; row < section.row_count; ++row) {
+        values.insert(section.data[row * n_cols + col]);
+    }
+    return std::vector<double>(values.begin(), values.end());
+}
+
+bool validate_axis2_inner(
+    const Section& section,
+    size_t n_cols,
+    size_t n_axis1,
+    size_t n_axis2,
+    const std::vector<double>& axis1,
+    const std::vector<double>& axis2
+) {
+    for (size_t i = 0; i < n_axis1; ++i) {
+        for (size_t j = 0; j < n_axis2; ++j) {
+            const size_t row = i * n_axis2 + j;
+            if (
+                section.data[row * n_cols] != axis1[i] ||
+                section.data[row * n_cols + 1] != axis2[j]
+            ) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+bool validate_axis1_inner(
+    const Section& section,
+    size_t n_cols,
+    size_t n_axis1,
+    size_t n_axis2,
+    const std::vector<double>& axis1,
+    const std::vector<double>& axis2
+) {
+    for (size_t j = 0; j < n_axis2; ++j) {
+        for (size_t i = 0; i < n_axis1; ++i) {
+            const size_t row = j * n_axis1 + i;
+            if (
+                section.data[row * n_cols] != axis1[i] ||
+                section.data[row * n_cols + 1] != axis2[j]
+            ) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+py::tuple parse_ffe_grid(const std::string path) {
+    FFEFile file_data = parse_ffe(path);
+
+    if (file_data.headers.size() < 2) {
+        throw std::runtime_error("FFE header must contain at least two coordinate columns.");
+    }
+    if (file_data.sections.empty()) {
+        throw std::runtime_error("No FFE sections were found.");
+    }
+
+    const size_t n_freq = file_data.sections.size();
+    const size_t n_cols = file_data.headers.size();
+    const size_t n_rows = file_data.sections[0].row_count;
+
+    if (n_rows == 0) {
+        throw std::runtime_error("First FFE section contains no data rows.");
+    }
+
+    std::vector<double> axis1 = infer_axis_values(file_data.sections[0], 0, n_cols);
+    std::vector<double> axis2 = infer_axis_values(file_data.sections[0], 1, n_cols);
+    size_t n_axis1 = file_data.axis1_samples == 0 ? axis1.size() : file_data.axis1_samples;
+    size_t n_axis2 = file_data.axis2_samples == 0 ? axis2.size() : file_data.axis2_samples;
+
+    if (n_axis1 * n_axis2 != n_rows) {
+        throw std::runtime_error("FFE axis sample counts do not match data row count.");
+    }
+    if (axis1.size() != n_axis1 || axis2.size() != n_axis2) {
+        throw std::runtime_error("FFE coordinate values do not match axis sample counts.");
+    }
+
+    const bool axis2_inner = validate_axis2_inner(
+        file_data.sections[0], n_cols, n_axis1, n_axis2, axis1, axis2
+    );
+    const bool axis1_inner = !axis2_inner && validate_axis1_inner(
+        file_data.sections[0], n_cols, n_axis1, n_axis2, axis1, axis2
+    );
+
+    if (!axis2_inner && !axis1_inner) {
+        throw std::runtime_error("FFE coordinate ordering is not a regular grid.");
+    }
+
+    std::vector<py::ssize_t> freq_shape(1);
+    freq_shape[0] = static_cast<py::ssize_t>(n_freq);
+    py::array_t<double> freqs(freq_shape);
+
+    std::vector<py::ssize_t> axis1_shape(1);
+    axis1_shape[0] = static_cast<py::ssize_t>(n_axis1);
+    py::array_t<double> axis1_array(axis1_shape);
+
+    std::vector<py::ssize_t> axis2_shape(1);
+    axis2_shape[0] = static_cast<py::ssize_t>(n_axis2);
+    py::array_t<double> axis2_array(axis2_shape);
+
+    std::vector<py::ssize_t> data_shape(4);
+    data_shape[0] = static_cast<py::ssize_t>(n_freq);
+    data_shape[1] = static_cast<py::ssize_t>(n_axis1);
+    data_shape[2] = static_cast<py::ssize_t>(n_axis2);
+    data_shape[3] = static_cast<py::ssize_t>(n_cols);
+    py::array_t<double> data(data_shape);
+
+    std::memcpy(axis1_array.mutable_data(), axis1.data(), axis1.size() * sizeof(double));
+    std::memcpy(axis2_array.mutable_data(), axis2.data(), axis2.size() * sizeof(double));
+
+    auto freqs_view = freqs.mutable_unchecked<1>();
+    auto data_view = data.mutable_unchecked<4>();
+
+    for (size_t f = 0; f < n_freq; ++f) {
+        const Section& section = file_data.sections[f];
+        if (section.row_count != n_rows || section.data.size() != n_rows * n_cols) {
+            throw std::runtime_error("FFE sections have inconsistent data shapes.");
+        }
+
+        freqs_view(f) = section.frequency;
+        for (size_t i = 0; i < n_axis1; ++i) {
+            for (size_t j = 0; j < n_axis2; ++j) {
+                const size_t row = axis2_inner ? i * n_axis2 + j : j * n_axis1 + i;
+                for (size_t c = 0; c < n_cols; ++c) {
+                    data_view(f, i, j, c) = section.data[row * n_cols + c];
+                }
+            }
+        }
+    }
+
+    return py::make_tuple(file_data.headers, freqs, axis1_array, axis2_array, data);
+}
+
 
 // 在 PYBIND11_MODULE 内部
 
@@ -273,4 +451,5 @@ PYBIND11_MODULE(_parser, m) {
 
     m.def("parse_ffe", &parse_ffe, "Parse FFE file");
     m.def("parse_ffe_array", &parse_ffe_array, "Parse FFE file and return headers, frequencies, and a 3D NumPy array");
+    m.def("parse_ffe_grid", &parse_ffe_grid, "Parse FFE file and return grid-shaped arrays for xarray construction");
 }

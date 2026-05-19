@@ -5,6 +5,7 @@ ext_modules = [
     Pybind11Extension(
         "ffe._parser",
         ["cpp/parser.cpp"],
+        cxx_std=17,
     ),
 ]
 

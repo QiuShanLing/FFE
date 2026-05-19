@@ -3,12 +3,23 @@ import xarray as xr
 
 
 class FFEToXarray:
-    def __init__(self, ffe_obj=None, *, headers=None, frequencies=None, data=None):
+    def __init__(
+        self,
+        ffe_obj=None,
+        *,
+        headers=None,
+        frequencies=None,
+        data=None,
+        axis1=None,
+        axis2=None,
+    ):
         """
         :param ffe_obj: C++ parser 返回的 FFEFile 对象，或 parse_ffe_array 的结果
         """
         if data is None and isinstance(ffe_obj, tuple) and len(ffe_obj) == 3:
             headers, frequencies, data = ffe_obj
+        elif data is None and isinstance(ffe_obj, tuple) and len(ffe_obj) == 5:
+            headers, frequencies, axis1, axis2, data = ffe_obj
 
         if data is None:
             if ffe_obj is None or not ffe_obj.sections:
@@ -20,36 +31,42 @@ class FFEToXarray:
         self.headers = [h.strip('"').replace("'", "") for h in headers]
         self.frequencies = np.asarray(frequencies)
         self.data = np.asarray(data)
+        self.axis1 = None if axis1 is None else np.asarray(axis1)
+        self.axis2 = None if axis2 is None else np.asarray(axis2)
 
-        if self.data.ndim != 3:
-            raise ValueError("FFE data must have shape (Frequency, SpatialPoint, Column).")
+        if self.data.ndim not in (3, 4):
+            raise ValueError("FFE data must have shape (Frequency, SpatialPoint, Column) or (Frequency, Axis1, Axis2, Column).")
 
-        self.n_freq, self.n_spatial, self.n_cols = self.data.shape
+        self.n_freq = self.data.shape[0]
+        self.n_cols = self.data.shape[-1]
+        self.n_spatial = self.data.shape[1] if self.data.ndim == 3 else self.data.shape[1] * self.data.shape[2]
         if self.n_cols != len(self.headers):
             raise ValueError("FFE header count does not match data column count.")
 
     @classmethod
     def from_file(cls, path):
-        from ..parser import parse_ffe_array
+        from ..parser import parse_ffe_grid
 
-        headers, frequencies, data = parse_ffe_array(path)
-        return cls(headers=headers, frequencies=frequencies, data=data)
+        headers, frequencies, axis1, axis2, data = parse_ffe_grid(path)
+        return cls(headers=headers, frequencies=frequencies, axis1=axis1, axis2=axis2, data=data)
+
+    def _coordinate_indices(self):
+        try:
+            return self.headers.index("Theta"), self.headers.index("Phi")
+        except ValueError:
+            lower_headers = [h.lower() for h in self.headers]
+            if "theta" in lower_headers and "phi" in lower_headers:
+                return lower_headers.index("theta"), lower_headers.index("phi")
+            if "u" in lower_headers and "v" in lower_headers:
+                return lower_headers.index("u"), lower_headers.index("v")
+            return 0, 1
 
     def _get_spatial_coords(self, data_sample):
         """
         从第一帧数据中解析 Theta 和 Phi 的网格结构。
         data_sample: shape (N_spatial, N_cols)
         """
-        # 找到 Theta 和 Phi 在列中的索引
-        # 注意：FEKO headers 通常是 "Theta", "Phi" (区分大小写，根据实际情况调整)
-        try:
-            t_idx = self.headers.index("Theta")
-            p_idx = self.headers.index("Phi")
-        except ValueError:
-            # 容错：如果找不到，尝试全小写匹配或其他备选方案
-            lower_headers = [h.lower() for h in self.headers]
-            t_idx = lower_headers.index("theta")
-            p_idx = lower_headers.index("phi")
+        t_idx, p_idx = self._coordinate_indices()
 
         # 提取坐标列
         theta_col = data_sample[:, t_idx]
@@ -103,6 +120,27 @@ class FFEToXarray:
         return result
 
     def convert(self):
+        if self.data.ndim == 4:
+            t_idx, p_idx = self._coordinate_indices()
+            axis1_name = self.headers[t_idx]
+            axis2_name = self.headers[p_idx]
+            data_vars = {}
+            for i, col_name in enumerate(self.headers):
+                if i == t_idx or i == p_idx:
+                    continue
+
+                data_vars[col_name] = (["Frequency", axis1_name, axis2_name], self.data[:, :, :, i])
+
+            return xr.Dataset(
+                data_vars=data_vars,
+                coords={
+                    "Frequency": self.frequencies,
+                    axis1_name: self.axis1,
+                    axis2_name: self.axis2,
+                },
+                attrs={"description": "Parsed from FFE file"}
+            )
+
         t_idx, p_idx, unique_thetas, unique_phis = self._get_spatial_coords(self.data[0])
 
         if unique_thetas is None:
