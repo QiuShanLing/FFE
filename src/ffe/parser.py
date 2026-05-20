@@ -69,7 +69,4 @@ def parse_ffe_datasets(paths: Iterable[PathInput]):
 
 def parse(path: PathInput | Iterable[PathInput]) -> FFData:
     """Parse one or more FFE files and return the high-level FFData wrapper."""
-    if isinstance(path, (str, PathLike)):
-        return FFData(parse_ffe_dataset(path))
-
-    return FFData(parse_ffe_datasets(path))
+    return FFData.from_path(path)
